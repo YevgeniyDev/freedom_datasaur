@@ -1,0 +1,14 @@
+services:
+  db:
+    image: postgres:16
+    container_name: fire_db
+    environment:
+      POSTGRES_DB: fire
+      POSTGRES_USER: fire
+      POSTGRES_PASSWORD: fire
+    ports:
+      - "55432:5432"
+    volumes:
+      - fire_pg:/var/lib/postgresql/data
+volumes:
+  fire_pg:
