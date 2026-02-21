@@ -208,6 +208,13 @@ def main() -> None:
             ai = enrich_ticket(session, ollama, t)
             language = (ai.language or "RU").upper()
             type_category = ai.type_category or "Консультация"
+            
+            # Do not assign spam tickets
+            if (type_category or "").strip() == "Спам":
+                # Keep in DB as enriched spam; no assignment row
+                session.commit()
+                print(f"[SPAM] ticket={t.id} stored, not assigned")
+                continue
 
             needs = compute_needs(segment=t.segment, type_category=type_category, language=language)
 
