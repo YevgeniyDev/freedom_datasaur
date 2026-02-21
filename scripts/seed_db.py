@@ -189,9 +189,12 @@ def main() -> None:
                 )
                 db.add(m)
 
-        # 3) Tickets
+        # 3) Tickets (UPSERT by client_guid)
         for _, row in tix_df.iterrows():
             client_guid = _clean_str(row.get(tix_guid_col))
+            if not client_guid:
+                continue  # skip bad rows
+
             gender = _clean_str(row.get(tix_gender_col))
             segment = _clean_str(row.get(tix_segment_col)) or "Mass"
             description = _clean_str(row.get(tix_desc_col))
@@ -211,20 +214,33 @@ def main() -> None:
                 except Exception:
                     birth_date = None
 
-            t = Ticket(
-                client_guid=client_guid,
-                gender=gender,
-                birth_date=birth_date,
-                segment=segment,
-                description=description,
-                attachment_path=attachment_path,
-                country=country,
-                region=region,
-                city=city,
-                street=street,
-                house=house,
-            )
-            db.add(t)
+            existing = db.query(Ticket).filter(Ticket.client_guid == client_guid).one_or_none()
+            if existing:
+                # Update fields (in case CSV changed)
+                existing.gender = gender
+                existing.birth_date = birth_date
+                existing.segment = segment
+                existing.description = description
+                existing.attachment_path = attachment_path
+                existing.country = country
+                existing.region = region
+                existing.city = city
+                existing.street = street
+                existing.house = house
+            else:
+                db.add(Ticket(
+                    client_guid=client_guid,
+                    gender=gender,
+                    birth_date=birth_date,
+                    segment=segment,
+                    description=description,
+                    attachment_path=attachment_path,
+                    country=country,
+                    region=region,
+                    city=city,
+                    street=street,
+                    house=house,
+                ))
 
     print("✅ Seed complete.")
     print(f"Loaded: {len(bu_df)} business_units rows, {len(mgr_df)} managers rows, {len(tix_df)} tickets rows.")

@@ -81,7 +81,7 @@ class Ticket(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    client_guid: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    client_guid: Mapped[Optional[str]] = mapped_column(String(64), nullable=False, unique=True)
     gender: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     birth_date: Mapped[Optional[datetime]] = mapped_column(Date, nullable=True)
 
@@ -219,4 +219,3 @@ class RRState(Base):
         UniqueConstraint("bucket_key", name="uq_rr_state_bucket_key"),
         Index("ix_rr_state_bucket_key", "bucket_key"),
     )
-    

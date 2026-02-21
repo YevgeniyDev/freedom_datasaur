@@ -68,13 +68,13 @@ def _choose_astana_almaty(ticket: Ticket, offices: List[BusinessUnit], reason: s
     almaty = _find_office(offices, "алмат", "almaty")
 
     if astana and almaty:
-        chosen = astana if _stable_coin_flip(str(ticket.id)) == 0 else almaty
+        chosen = astana if _stable_coin_flip(ticket.client_guid or str(ticket.id)) == 0 else almaty
         return chosen, f"{reason} -> 50/50 Astana/Almaty"
 
     # fallback if names not found
     a = offices[0]
     b = offices[1] if len(offices) > 1 else offices[0]
-    chosen = a if _stable_coin_flip(str(ticket.id)) == 0 else b
+    chosen = a if _stable_coin_flip(ticket.client_guid or str(ticket.id)) == 0 else b
     return chosen, f"{reason} -> 50/50 first-two offices"
 
 
@@ -281,4 +281,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
