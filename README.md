@@ -66,7 +66,7 @@ Hard business rules:
    - assignments.decision_trace records office reason, constraints, eligible set, loads, RR pick, notes
 
 Spam handling
-- Tickets classified as "Спам" are enriched and stored in ticket_ai, but are NOT assigned to a manager.
+- Tickets classified as "Спам" are enriched and stored in ticket_ai, but are NOT assigned to a manager and do not contain summary.
 
 ----------------------------------------------------
 Repo structure (main parts)
