@@ -71,6 +71,8 @@ Spam handling
 ----------------------------------------------------
 Repo structure (main parts)
 ----------------------------------------------------
+
+```bash
 backend/app/main.py                FastAPI entrypoint (health endpoint)
 backend/app/db/models.py           SQLAlchemy models (tickets, ticket_ai, managers, business_units, assignments, rr_state)
 backend/alembic/                   Migrations
@@ -83,6 +85,7 @@ scripts/seed_db.py                 CSV → DB seeding (cleans tables + inserts)
 scripts/run_batch.py               Batch: enrich + choose office + filter + allocate RR + write assignments
 data/                              CSVs and attachments (e.g. order_error.png)
 backend/Dockerfile                 Backend container (installs tesseract + build tools for fasttext)
+```
 
 ----------------------------------------------------
 Requirements / Tools
@@ -98,57 +101,62 @@ Setup (Dockerized backend + Postgres)
 
 1) Start services
 From repo root:
-  docker compose up --build
+  `docker compose up --build`
 
 Expected logs:
-  fire_backend | Uvicorn running on http://0.0.0.0:8000
+  `fire_backend | Uvicorn running on http://0.0.0.0:8000`
 
 Health check (browser):
-  http://localhost:8000/health
+  `http://localhost:8000/health`
 
 2) .env (optional, if you run scripts locally)
 If you run inside container, compose env is enough. For local runs, create .env:
+  ```bash
   DATABASE_URL=postgresql+psycopg2://fire:fire@127.0.0.1:55432/fire
   OLLAMA_BASE_URL=http://localhost:11434
   OLLAMA_MODEL=qwen2.5:3b-instruct
   FASTTEXT_LID_PATH=backend/app/ai/models/lid.176.bin
+  ```
 
 3) fastText language model (lid.176.bin)
 Download once (PowerShell, repo root):
-  mkdir backend\app\ai\models -Force
-  Invoke-WebRequest -Uri "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin" -OutFile "backend\app\ai\models\lid.176.bin"
+  `mkdir backend\app\ai\models -Force`
+  `Invoke-WebRequest -Uri "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin" -OutFile "backend\app\ai\models\lid.176.bin"`
 
 Do NOT commit:
-  backend/app/ai/models/*.bin
+  `backend/app/ai/models/*.bin`
 
 ----------------------------------------------------
 Run migrations + seed + batch (inside container)
 ----------------------------------------------------
 
 Open a shell:
-  docker exec -it fire_backend bash
+  `docker exec -it fire_backend bash`
 
 Then:
-  cd /app/backend
-  alembic upgrade head
+  `cd /app/backend`
+  `alembic upgrade head`
 
 Seed (loads CSVs, clears derived tables):
-  python /app/scripts/seed_db.py
+  `python /app/scripts/seed_db.py`
 
 Run batch (enrich + route + assign; spam is not assigned):
-  python /app/scripts/run_batch.py
+  `python /app/scripts/run_batch.py`
 
 Expected counts (example):
+  ```bash
   tickets 31
   ticket_ai 31
   assignments 28
   spam not assigned 3
+  ```
 
 ----------------------------------------------------
 Export results to CSV (Excel-friendly)
 ----------------------------------------------------
 
 Inside container (writes UTF-8 with BOM via utf-8-sig):
+  ```bash
   python - << 'PY'
 import os, pandas as pd
 from sqlalchemy import create_engine, text
@@ -183,9 +191,15 @@ df = pd.read_sql_query(text(q), e)
 df.to_csv('/app/data/results.csv', index=False, encoding='utf-8-sig')
 print('Wrote /app/data/results.csv rows:', len(df))
 PY
+```
 
 Copy to Windows (run in PowerShell on host, NOT inside container):
-  docker cp fire_backend:/app/data/results.csv .\results.csv
+
+  `docker cp fire_backend:/app/data/results.csv .\results.csv`
+
+Transform to Excel format (to avoid artifacts):
+
+  ` python -c "p=open('results.csv','rb').read(); open('results_excel.csv','wb').write(b'\xef\xbb\xbf'+p)"`
 
 ----------------------------------------------------
 Quick checks (SQL)
@@ -193,28 +207,33 @@ Quick checks (SQL)
 
 Hard-rule violations should be 0:
 - VIP skill:
+  ```bash
   select count(*) from assignments a
   join tickets t on t.id=a.ticket_id
   join managers m on m.id=a.manager_id
   where t.segment in ('VIP','Priority') and not ('VIP'=any(m.skills));
-
+  ```
 - Data-change → only chief:
+```bash
   select count(*) from assignments a
   join ticket_ai ai on ai.ticket_id=a.ticket_id
   join managers m on m.id=a.manager_id
   where ai.type_category='Смена данных' and lower(m.position) not like '%глав%';
-
+```
 - Language skills:
+  ```bash
   select count(*) from assignments a
   join ticket_ai ai on ai.ticket_id=a.ticket_id
   join managers m on m.id=a.manager_id
   where ai.language in ('ENG','KZ') and not (ai.language=any(m.skills));
-
+  ```
 OCR proof:
 - show rows where OCR was stored:
+```bash
   select t.attachment_path, left(ai.confidence->>'attachment_ocr', 200)
   from tickets t join ticket_ai ai on ai.ticket_id=t.id
   where ai.confidence ? 'attachment_ocr';
+```
 
 ----------------------------------------------------
 Notes / Next improvements
