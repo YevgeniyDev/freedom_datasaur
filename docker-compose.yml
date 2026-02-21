@@ -10,5 +10,27 @@ services:
       - "55432:5432"
     volumes:
       - fire_pg:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: fire_backend
+    environment:
+      DATABASE_URL: postgresql+psycopg2://fire:fire@db:5432/fire
+
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: qwen2.5:3b-instruct
+
+      FASTTEXT_LID_PATH: /app/backend/app/ai/models/lid.176.bin
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+      - ./data:/app/data
+      - ./scripts:/app/scripts
+
 volumes:
   fire_pg:

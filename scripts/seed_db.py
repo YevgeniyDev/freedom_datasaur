@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import Optional, List
+from sqlalchemy import text
 
 import pandas as pd
 
@@ -112,7 +113,7 @@ def main() -> None:
 
     # --- Seed into DB ---
     with db_session() as db:
-        db.execute("TRUNCATE assignments, rr_state, ticket_ai, tickets, managers, business_units;")
+        db.execute(text("TRUNCATE assignments, rr_state, ticket_ai, tickets, managers, business_units RESTART IDENTITY CASCADE;"))
         # 1) Business Units
         # Use normalized office name for robust mapping
         office_to_bu_id = {}

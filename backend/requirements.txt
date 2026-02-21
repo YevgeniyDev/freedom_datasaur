@@ -3,7 +3,8 @@ uvicorn[standard]
 pydantic
 pydantic-settings
 python-dotenv
-pandas
+pandas==2.2.2
+numpy==2.0.2
 sqlalchemy
 psycopg2-binary
 alembic

@@ -15,7 +15,7 @@ from app.ai.llm_client import OllamaClient
 from app.db.models import Ticket, TicketAI
 from app.ai.lang_detect import detect_language
 
-# OCR (optional dependency; installed via requirements + system tesseract)
+# OCR deps (Step 2)
 from PIL import Image
 import pytesseract
 
@@ -33,9 +33,17 @@ UZ_HINTS = {
 # -----------------------
 # Rule-based guardrails
 # -----------------------
-# App flow / verification / registration failures MUST win over "Смена данных"
+CHANGE_DATA_PATTERNS = [
+    r"\bсмен(а|ить)\b.*\bданн",
+    r"\bобнов(ить|ление)\b.*\bданн",
+    r"\bизмен(ить|ение)\b.*\b(телефон|номер|почт|email|e-mail|адрес|паспорт|удост|иин|фио|фамил|имя|дата рождения)\b",
+    r"\bпомен(ять|ял)\b.*\b(телефон|номер|почт|email|e-mail|адрес|паспорт|удост|иин|фио|фамил|имя|дата рождения)\b",
+    r"\bисправ(ить|ление)\b.*\b(фио|фамил|имя|дата рождения|паспорт|удост|иин)\b",
+]
+
+# Important: verification/registration issues are APP ISSUES, not "Смена данных"
 APP_FLOW_PATTERNS = [
-    r"\bне могу\b.*\b(подтверд(ить|ить)|верифицирова(ть|ть)|подтвержден)\b",
+    r"\bне могу\b.*\b(подтверд(ить|ить)|верифицирова(ть|ться)|подтвержден)\b",
     r"\b(верификац|подтвержден|подтвердить)\b.*\b(адрес|регистрац)\b",
     r"\bрегистрац(ия|ионн)\b.*\b(адрес|подтвердить)\b",
     r"\bязык\b.*\b(документ|справк|выписк)\b",
@@ -44,18 +52,11 @@ APP_FLOW_PATTERNS = [
 ]
 
 PAYMENT_FAIL_PATTERNS = [
-    r"\bне (могу|удается)\b.*\b(оплат|провест(и|и))\b",
+    r"\bне (могу|удается)\b.*\b(оплат|провест(и|ь))\b",
     r"\bоплат(а|ить)\b.*\bне проход(ит|ит)\b",
     r"\bошибк(а|и)\b.*\b(оплат|платеж)\b",
     r"\b(карта|картой)\b.*\bне (работает|принимается|проходит)\b",
-]
-
-CHANGE_DATA_PATTERNS = [
-    r"\bсмен(а|ить)\b.*\bданн",  # смена данных / сменить данные
-    r"\bобнов(ить|ление)\b.*\bданн",
-    r"\bизмен(ить|ение)\b.*\b(телефон|номер|почт|email|e-mail|адрес|паспорт|удост|иин|фио|фамил|имя|дата рождения)\b",
-    r"\bпомен(ять|ял)\b.*\b(телефон|номер|почт|email|e-mail|адрес|паспорт|удост|иин|фио|фамил|имя|дата рождения)\b",
-    r"\bисправ(ить|ление)\b.*\b(фио|фамил|имя|дата рождения|паспорт|удост|иин)\b",
+    r"\bотклонен\b.*\bплатеж\b",
 ]
 
 COMMISSION_FEE_PATTERNS = [
@@ -77,23 +78,14 @@ SPAM_PATTERNS = [
 ]
 
 
-def _clamp_urgency(u: Any, default: int = 5) -> int:
-    try:
-        v = int(u)
-    except Exception:
-        v = int(default)
-    return max(1, min(10, v))
-
-
-def rule_override_category(text: str) -> Tuple[str | None, Dict[str, Any]]:
+def rule_override_category(text: str) -> Tuple[Optional[str], Dict[str, Any]]:
     """
     Deterministic overrides to prevent damaging misclassification:
-    Priority order:
-      1) Spam -> Спам
-      2) App/verification flow -> Неработоспособность приложения
-      3) Payment fail -> Неработоспособность приложения
-      4) Strong personal data change -> Смена данных
-      5) Fees/commission questions -> Консультация
+    - Spam -> Спам
+    - App flow (verification/registration/doc language) -> Неработоспособность приложения
+    - Payment fail -> Неработоспособность приложения
+    - Strong personal data change -> Смена данных
+    - Fees/commission questions -> Консультация
     """
     t = (text or "").strip().lower()
     signals: Dict[str, Any] = {"hit": []}
@@ -106,25 +98,25 @@ def rule_override_category(text: str) -> Tuple[str | None, Dict[str, Any]]:
             signals["hit"].append(f"spam:{p}")
             return "Спам", signals
 
-    # 2) App flow / verification failures
+    # 2) App flow failures must win over "Смена данных"
     for p in APP_FLOW_PATTERNS:
         if re.search(p, t, re.IGNORECASE):
             signals["hit"].append(f"app_flow:{p}")
             return "Неработоспособность приложения", signals
 
-    # 3) Payment failures
+    # 3) Payment failures -> app issue
     for p in PAYMENT_FAIL_PATTERNS:
         if re.search(p, t, re.IGNORECASE):
             signals["hit"].append(f"payment_fail:{p}")
             return "Неработоспособность приложения", signals
 
-    # 4) Strong "change personal data"
+    # 4) Strong personal data change
     for p in CHANGE_DATA_PATTERNS:
         if re.search(p, t, re.IGNORECASE):
             signals["hit"].append(f"change_data:{p}")
             return "Смена данных", signals
 
-    # 5) Fee/commission questions are NOT "Смена данных"
+    # 5) Fee/commission questions are consultation (not change-data)
     fee_hits = sum(1 for p in COMMISSION_FEE_PATTERNS if re.search(p, t, re.IGNORECASE))
     if fee_hits >= 2:
         signals["hit"].append({"fee_hits": fee_hits})
@@ -133,29 +125,50 @@ def rule_override_category(text: str) -> Tuple[str | None, Dict[str, Any]]:
     return None, signals
 
 
-def ocr_attachment_text(attachment_path: Optional[str]) -> Optional[str]:
+def _clamp_urgency(u: Any, default: int = 5) -> int:
+    try:
+        v = int(u)
+    except Exception:
+        v = int(default)
+    return max(1, min(10, v))
+
+
+# -----------------------
+# OCR helper (Step 2)
+# -----------------------
+def resolve_attachment_path(rel_or_abs: str | None) -> Optional[Path]:
     """
-    OCR for image attachments. Returns extracted text (single-line) or None.
-    Supports both absolute and repo-relative paths.
+    tickets.csv stores relative paths like 'order_error.png'.
+    We resolve them against repo_root/data/.
+    Also supports absolute paths.
     """
-    if not attachment_path:
+    if not rel_or_abs:
+        return None
+    s = str(rel_or_abs).strip()
+    if not s:
         return None
 
-    p = Path(str(attachment_path)).expanduser()
+    p = Path(s)
+    if p.is_absolute() and p.exists():
+        return p
 
-    # If path is relative, resolve against repo_root / data (common in this project)
-    if not p.is_absolute():
-        repo_root = Path(__file__).resolve().parents[3]
-        candidate = repo_root / "data" / p
-        if candidate.exists():
-            p = candidate
-        else:
-            # try repo root directly
-            candidate2 = repo_root / p
-            if candidate2.exists():
-                p = candidate2
+    # repo root: backend/app/ai/enrich.py -> parents[3] == repo root
+    repo_root = Path(__file__).resolve().parents[3]
+    candidate = repo_root / "data" / p.name
+    if candidate.exists():
+        return candidate
 
-    if not p.exists() or not p.is_file():
+    # also allow direct relative from repo root
+    candidate2 = repo_root / p
+    if candidate2.exists():
+        return candidate2
+
+    return None
+
+
+def ocr_attachment_text(attachment: str | None) -> Optional[str]:
+    p = resolve_attachment_path(attachment)
+    if not p or not p.is_file():
         return None
 
     if p.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
@@ -163,10 +176,10 @@ def ocr_attachment_text(attachment_path: Optional[str]) -> Optional[str]:
 
     try:
         img = Image.open(p)
-        # rus+eng is enough for the common UI errors + Russian UI
-        txt = pytesseract.image_to_string(img, lang="rus+eng")
-        txt = " ".join((txt or "").split())
-        return txt if txt else None
+        # rus+eng is enough for your screenshots; can add kaz later if installed
+        text = pytesseract.image_to_string(img, lang="rus+eng")
+        text = " ".join((text or "").split())
+        return text if text else None
     except Exception:
         return None
 
@@ -177,21 +190,23 @@ def enrich_ticket(session: Session, ollama: OllamaClient, ticket: Ticket) -> Tic
     if existing:
         return existing
 
-    # OCR attachment (if any) BEFORE LLM call, so LLM can use real content
-    ocr_text = ocr_attachment_text(ticket.attachment_path)
+    # OCR extracted text (used in prompt; safe even if None)
+    attachment_ocr = ocr_attachment_text(ticket.attachment_path)
 
     raw = ollama.chat_json(
         system=SYSTEM_PROMPT,
-        user=user_prompt(ticket.description, ticket.attachment_path, ocr_text),
+        user=user_prompt(ticket.description, ticket.attachment_path, attachment_ocr),
     )
     out = EnrichmentOut(**raw)
 
     # -----------------------
-    # Category rule overrides (text + OCR text)
+    # Category rule overrides (text-only, but OCR helps too because it gets added to description below)
     # -----------------------
-    combined_text = " ".join(
-        [x for x in [(ticket.description or "").strip(), (ocr_text or "").strip()] if x]
-    )
+    # Combine description + OCR for robust rules
+    combined_text = (ticket.description or "")
+    if attachment_ocr:
+        combined_text = combined_text + "\n\n[OCR]\n" + attachment_ocr
+
     override_cat, rule_signals = rule_override_category(combined_text)
     if override_cat:
         out.type_category = override_cat
@@ -254,17 +269,13 @@ def enrich_ticket(session: Session, ollama: OllamaClient, ticket: Ticket) -> Tic
     elif p_ru >= 0.60:
         final_lang = "RU"
     else:
-        # Weak signals -> heuristics
         low_text = text.lower()
         tokens = set(low_text.replace("\n", " ").split())
 
-        # Kazakh letters -> KZ
         if any(ch in low_text for ch in ["ә", "ө", "ү", "ұ", "қ", "ғ", "ң", "һ", "і"]):
             final_lang = "KZ"
-        # Mostly Latin + English hints -> ENG
         elif latin_ratio >= 0.60 and (tokens & EN_HINTS):
             final_lang = "ENG"
-        # Mostly Latin but not English-like -> unknown (Uzbek-ish), keep RU but flag for review
         elif latin_ratio >= 0.60 and ((tokens & UZ_HINTS) or p_en >= 0.45):
             final_lang = "RU"
             unknown_lang_flag = True
@@ -283,7 +294,7 @@ def enrich_ticket(session: Session, ollama: OllamaClient, ticket: Ticket) -> Tic
     if top_code and (top_code not in KNOWN) and top_prob >= 0.55 and latin_ratio >= 0.45:
         unknown_lang_flag = True
 
-    # If language seems unknown, annotate summary for the manager/UI
+    # If language seems unknown, annotate summary for manager/UI
     if unknown_lang_flag:
         note = (
             "⚠️ Похоже, язык обращения не RU/ENG/KZ. "
@@ -300,7 +311,10 @@ def enrich_ticket(session: Session, ollama: OllamaClient, ticket: Ticket) -> Tic
     conf["llm_language"] = {"lang": llm_lang}
     conf["fasttext_summary"] = {"p_en": p_en, "p_ru": p_ru, "p_kk": p_kk}
     conf["unknown_language_flag"] = bool(unknown_lang_flag)
-    conf["attachment_ocr"] = {"used": bool(ocr_text), "text": ocr_text}
+
+    # Store OCR snippet in confidence (useful for debugging/UI)
+    if attachment_ocr:
+        conf["attachment_ocr"] = attachment_ocr[:500]  # keep it small
 
     ai = TicketAI(
         ticket_id=ticket.id,

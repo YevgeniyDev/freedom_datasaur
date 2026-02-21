@@ -31,10 +31,12 @@ SYSTEM_PROMPT = """Ты помощник службы поддержки Freedom
 }
 """
 
-def user_prompt(description: str, attachment_hint: str | None = None) -> str:
+def user_prompt(description: str, attachment_hint: str | None = None, attachment_ocr: str | None = None) -> str:
     attach = attachment_hint or "нет"
-    return f"""Текст обращения (прочитай внимательно):
+    ocr = attachment_ocr or "нет"
+    return f"""Текст обращения:
 Описание: {description or "<ПУСТО>"}
 Вложения: {attach}
+Вложения (OCR): {ocr}
 
-Верни JSON строго по формату. Категория должна соответствовать правилам из system prompt."""
+Верни JSON строго по формату."""
