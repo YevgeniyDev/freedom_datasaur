@@ -10,3 +10,5 @@ alembic
 httpx
 rapidfuzz
 fasttext
+pytesseract
+Pillow
