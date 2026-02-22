@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FIRE Ticket Lookup</title>
+    <link rel="stylesheet" href="./main.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="top">
+        <h1>Ticket Lookup</h1>
+        <p>Paste a <b>client GUID</b> to see enrichment + assignment.</p>
+      </header>
+
+      <section class="card">
+        <form id="form">
+          <label for="guid">Client GUID</label>
+          <div class="row">
+            <input
+              id="guid"
+              placeholder="e.g., 3fa85f64-5717-4562-b3fc-2c963f66afa6"
+            />
+            <button id="btn" type="submit">Find</button>
+          </div>
+          <div class="hint">
+            Backend URL:
+            <input id="baseUrl" value="http://localhost:8000" />
+          </div>
+        </form>
+
+        <div id="status" class="status"></div>
+      </section>
+
+      <section id="result" class="card hidden">
+        <div class="resultHeader">
+          <h2 id="title"></h2>
+          <button id="copyBtn" type="button">Copy JSON</button>
+        </div>
+
+        <div class="grid">
+          <div class="kpi">
+            <div class="k">Assigned Office</div>
+            <div class="v" id="office"></div>
+          </div>
+          <div class="kpi">
+            <div class="k">Assigned Manager</div>
+            <div class="v" id="manager"></div>
+          </div>
+          <div class="kpi">
+            <div class="k">Segment</div>
+            <div class="v" id="segment"></div>
+          </div>
+          <div class="kpi">
+            <div class="k">Language</div>
+            <div class="v" id="lang"></div>
+          </div>
+
+          <div class="kpi">
+            <div class="k">Category</div>
+            <div class="v" id="cat"></div>
+          </div>
+          <div class="kpi">
+            <div class="k">Sentiment</div>
+            <div class="v" id="sent"></div>
+          </div>
+          <div class="kpi">
+            <div class="k">Urgency</div>
+            <div class="v" id="urg"></div>
+          </div>
+          <div class="kpi">
+            <div class="k">Needs review</div>
+            <div class="v" id="review"></div>
+          </div>
+        </div>
+
+        <div class="block">
+          <div class="k">Summary</div>
+          <div class="mono" id="summary"></div>
+        </div>
+
+        <div class="block">
+          <div class="k">Description</div>
+          <div class="mono" id="desc"></div>
+        </div>
+
+        <div class="block">
+          <div class="k">Address</div>
+          <div class="mono" id="addr"></div>
+        </div>
+
+        <details class="block">
+          <summary>Raw JSON</summary>
+          <pre class="mono" id="raw"></pre>
+        </details>
+      </section>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
