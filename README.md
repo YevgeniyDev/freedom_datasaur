@@ -64,11 +64,14 @@ From repo root:
 
 1. Start services:
 
-docker compose up --build -d
+`docker compose up --build -d`
 
-2. Run migrations, seed DB, process tickets, export results:
+2. Open another Terminal window and run:
 
-docker exec -it fire_backend bash -lc "
+`docker exec -it fire_backend bash`
+    
+3. Run migrations, seed DB, process tickets, export results:
+```bash
 cd /app/backend &&
 alembic upgrade head &&
 python /app/scripts/seed_db.py &&
@@ -107,109 +110,47 @@ df.to_csv('/app/data/results.csv', index=False, encoding='utf-8-sig')
 print('Wrote /app/data/results.csv rows:', len(df))
 PY
 "
+```
 
-3. Copy CSV to host:
+4. To view results in CSV format - copy CSV to host:
 
 Windows PowerShell:
-docker cp fire_backend:/app/data/results.csv .\results.csv
+
+`docker cp fire_backend:/app/data/results.csv .\results.csv`
 
 macOS/Linux:
-docker cp fire_backend:/app/data/results.csv ./results.csv
+
+`docker cp fire_backend:/app/data/results.csv ./results.csv`
+
+5. Transform it into viewable Excel formatting:
+
+`python -c "p=open('results.csv','rb').read(); open('results_excel.csv','wb').write(b'\xef\xbb\xbf'+p)"`
+
+Now you can check it in the ROOT Repo folder - 'results_excel.csv'
 
 ---
 
-## Debug / Verification
-
-Check backend docs:
-http://localhost:8000/docs
-
-Check logs:
-docker logs fire_backend --tail 100
-
----
-
-## Ticket Lookup API (GUID → Assignment + Enrichment)
-
-To support the frontend lookup, the backend provides:
-
-GET /api/tickets/{client_guid}
-
-Example:
-http://localhost:8000/api/tickets/fe44694a-10ed-f011-8406-0022481ba5f0
-
-If you see:
-
-- 404 Not Found (endpoint): route is not registered (fix `backend/app/main.py`)
-- 404 with JSON detail: GUID not in DB (pipeline not run or GUID wrong)
-
-### Minimal Implementation (backend/app/main.py)
-
-Add this to the SAME FastAPI `app` that uvicorn runs (`uvicorn app.main:app`):
-
-from fastapi import HTTPException
-from sqlalchemy import text
-from app.db.session import SessionLocal
-
-@app.get("/api/tickets/{client_guid}")
-def api_ticket_lookup(client_guid: str):
-db = SessionLocal()
-try:
-q = text("""
-select
-t.client_guid,
-t.segment,
-t.country, t.region, t.city, t.street, t.house,
-t.description,
-t.attachment_path,
-ai.type_category,
-ai.sentiment,
-ai.urgency,
-ai.language as final_language,
-ai.needs_review,
-ai.summary,
-bu.office_name as assigned_office,
-m.full_name as assigned_manager,
-m.position as manager_position,
-m.skills as manager_skills,
-a.assigned_at
-from tickets t
-left join ticket_ai ai on ai.ticket_id = t.id
-left join assignments a on a.ticket_id = t.id
-left join managers m on m.id = a.manager_id
-left join business_units bu on bu.id = a.business_unit_id
-where t.client_guid = :guid
-order by a.assigned_at desc nulls last
-limit 1
-""")
-row = db.execute(q, {"guid": client_guid}).mappings().first()
-if not row:
-raise HTTPException(status_code=404, detail="Ticket GUID not found in DB")
-return dict(row)
-finally:
-db.close()
-
-Rebuild after changes:
-docker compose up --build -d
-
----
-
-## Frontend (10–15 min UI): Search Ticket by GUID
+## Frontend: Search Ticket by GUID
 
 This is a single HTML page served by a static server.
 
 ### Run
 
 1. Ensure backend is running on:
-   http://localhost:8000
+   
+   `http://localhost:8000`
 
-2. Start frontend static server:
+3. Start frontend static server:
 
 From repo root:
-cd frontend
-python -m http.server 5173
+
+`cd frontend`
+
+`python -m http.server 5173`
 
 Open:
-http://localhost:5173
+
+`http://localhost:5173`
 
 Paste a GUID, press Find → you get assignment + AI enrichment + raw JSON.
 
@@ -223,8 +164,7 @@ If frontend says it cannot reach backend:
 
 - confirm `http://localhost:8000/docs` opens
 - confirm the lookup endpoint exists in docs: `GET /api/tickets/{client_guid}`
-- if your backend is containerized but frontend also in docker, use service name instead of localhost
-
+  
 ---
 
 ## How Assignment Works (High Level)
@@ -249,26 +189,6 @@ If frontend says it cannot reach backend:
 
 ---
 
-## Common Issues
-
-### 1) /api/tickets/{guid} returns 404 Not Found (endpoint)
-
-You did not register the route in the FastAPI `app` used by uvicorn.
-Fix: add endpoint to `backend/app/main.py` where `app = FastAPI()` is defined, rebuild.
-
-### 2) Ticket GUID not found
-
-Run pipeline:
-python /app/scripts/seed_db.py
-python /app/scripts/run_batch.py
-
-### 3) LLM not reachable
-
-If you use Ollama on host, ensure it is running and the backend container can reach it.
-(If needed, expose host via `host.docker.internal` on Windows/Mac.)
-
----
-
 ## Outputs
 
 - DB tables: tickets + ticket_ai + assignments + managers + business_units
@@ -277,6 +197,36 @@ If you use Ollama on host, ensure it is running and the backend container can re
   - copy to host with `docker cp`
 
 ---
+
+## Common Issues
+
+### 1) Ticket GUID not found
+
+In the Docker container un pipeline:
+```bash
+python /app/scripts/seed_db.py
+python /app/scripts/run_batch.py
+```
+
+### 2) LLM not reachable
+
+If you use Ollama on host, ensure it is running and the backend container can reach it.
+(If needed, expose host via `host.docker.internal` on Windows/Mac.)
+
+---
+
+## Debug / Verification
+
+Check backend docs:
+
+`http://localhost:8000/docs`
+
+Check logs:
+
+`docker logs fire_backend --tail 100`
+
+---
+
 
 ## Hackathon Deliverable Notes
 
