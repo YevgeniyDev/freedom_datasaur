@@ -3,7 +3,7 @@ Ticket Enrichment • Routing • Fair Manager Assignment • Dashboard UI
 
 ---
 
-## 1) Project, Purpose, Goals
+## 1. Project description & Goals
 
 This repository implements an end-to-end prototype for the FIRE Challenge:
 a system that takes incoming customer tickets, enriches them with AI, routes them
@@ -20,7 +20,7 @@ Core goals:
 
 ---
 
-## 2) Technology Used, Dependencies, Setup Requirements
+## 2. Technology Used, Dependencies, Setup Requirements
 
 ### Backend
 - Python 3.11+
@@ -51,8 +51,8 @@ Core goals:
 
 ---
 
-## 3) Repository Structure
-
+## 3. Repository Structure
+```bash
 FREEDOM_DATASAUR/
 ├── backend/
 │   ├── alembic/                 # migrations
@@ -89,46 +89,50 @@ FREEDOM_DATASAUR/
 ├── docker-compose.yml
 ├── .env.example
 └── README.md
-
+```
 ---
 
-## 4) Quick Setup Guide (Commands)
+## 4. Quick Setup Guide
 
 ### A) Start everything (Docker)
 From repo root:
 
-1) Build + start containers:
-   docker compose up --build -d
+1. Start services:
 
-2) Seed DB (truncates and reloads CSVs):
-   docker exec -it fire_backend bash -lc "python /app/scripts/seed_db.py"
+`docker compose up --build -d`
 
-3) Run batch enrichment + routing + assignment:
-   docker exec -it fire_backend bash -lc "python /app/scripts/run_batch.py"
+2. Run:
 
-4) (Optional) Export results CSV (inside container):
-   docker exec -it fire_backend bash -lc "python - << 'PY'
+`docker exec -it fire_backend bash`
+    
+3. Run migrations, seed DB, process tickets, export results:
+```bash
+cd /app/backend &&
+alembic upgrade head &&
+python /app/scripts/seed_db.py &&
+python /app/scripts/run_batch.py &&
+python - << 'PY'
 import os, pandas as pd
 from sqlalchemy import create_engine, text
 e = create_engine(os.environ['DATABASE_URL'])
 q = '''
 select
-  t.client_guid,
-  t.segment,
-  t.country, t.region, t.city, t.street, t.house,
-  t.description,
-  t.attachment_path,
-  ai.type_category,
-  ai.sentiment,
-  ai.urgency,
-  ai.language as final_language,
-  ai.needs_review,
-  ai.summary,
-  bu.office_name as assigned_office,
-  m.full_name as assigned_manager,
-  m.position as manager_position,
-  m.skills as manager_skills,
-  a.assigned_at
+t.client_guid,
+t.segment,
+t.country, t.region, t.city, t.street, t.house,
+t.description,
+t.attachment_path,
+ai.type_category,
+ai.sentiment,
+ai.urgency,
+ai.language as final_language,
+ai.needs_review,
+ai.summary,
+bu.office_name as assigned_office,
+m.full_name as assigned_manager,
+m.position as manager_position,
+m.skills as manager_skills,
+a.assigned_at
 from tickets t
 left join ticket_ai ai on ai.ticket_id = t.id
 left join assignments a on a.ticket_id = t.id
@@ -139,26 +143,28 @@ order by a.assigned_at nulls last, t.client_guid
 df = pd.read_sql_query(text(q), e)
 df.to_csv('/app/data/results.csv', index=False, encoding='utf-8-sig')
 print('Wrote /app/data/results.csv rows:', len(df))
-PY"
+PY
+"
+```
 
-5) Copy CSV to host:
-   Windows PowerShell:
-     docker cp fire_backend:/app/data/results.csv .\results.csv
-   macOS/Linux:
-     docker cp fire_backend:/app/data/results.csv ./results.csv
+Now you can check the CSV with results in the data folder - 'results.csv'
 
 ### B) Run the frontend dashboard
 The frontend is static files.
 
 From repo root:
-  cd frontend
-  python -m http.server 5173
+
+  `cd frontend`
+  
+  `python -m http.server 5173`
 
 Open:
-  http://localhost:5173
+
+  `http://localhost:5173`
 
 Backend URL should be:
-  http://localhost:8000
+
+  `http://localhost:8000`
 
 ---
 
@@ -208,39 +214,49 @@ frontend/index.html + app.js provides:
 
 ### 1) Frontend says “Cannot reach backend”
 Check:
-- http://localhost:8000/docs opens in browser
+- `http://localhost:8000/docs` opens in browser
 - container ports:
-  docker ps
-  docker port fire_backend
+  
+  `docker ps`
+
+  `docker port fire_backend`
 
 ### 2) Endpoint /api/tickets not found
 Make sure you rebuilt after editing backend:
-  docker compose up --build -d
+  
+  `docker compose up --build -d`
 
 Then verify:
-  http://localhost:8000/docs
+  
+  `http://localhost:8000/docs`
 
 ### 3) “Assigned: 0, Skipped: N”
 This happens when run_batch.py sees existing assignments and skips them.
-If you changed enrichment rules and want to recompute, reseed:
-  docker exec -it fire_backend bash -lc "python /app/scripts/seed_db.py"
-  docker exec -it fire_backend bash -lc "python /app/scripts/run_batch.py"
+If you changed enrichment rules and want to recompute, reseed inside the container:
+
+  `python /app/scripts/seed_db.py`
+  
+  `python /app/scripts/run_batch.py`
 
 ### 4) LLM/Ollama not reachable
 If backend is inside Docker and Ollama runs on host:
 - Windows/macOS often supports host.docker.internal
 Set in .env:
-  OLLAMA_BASE_URL=http://host.docker.internal:11434
+
+  `OLLAMA_BASE_URL=http://host.docker.internal:11434`
 
 Verify from container:
-  docker exec -it fire_backend bash -lc "curl -s http://host.docker.internal:11434/api/tags | head"
+
+  `docker exec -it fire_backend bash -lc "curl -s http://host.docker.internal:11434/api/tags | head"`
 
 ### 5) fastText model missing
 Ensure file exists:
-  backend/app/ai/models/lid.176.bin
+
+  `backend/app/ai/models/lid.176.bin`
 
 Or set:
-  FASTTEXT_LID_PATH=/app/backend/app/ai/models/lid.176.bin
+
+  `FASTTEXT_LID_PATH=/app/backend/app/ai/models/lid.176.bin`
 
 ### 6) OCR does nothing
 OCR requires Tesseract runtime inside container. If not installed, enrich.py will safely ignore OCR.
