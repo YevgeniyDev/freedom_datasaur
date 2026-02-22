@@ -66,7 +66,7 @@ From repo root:
 
 `docker compose up --build -d`
 
-2. Open another Terminal window and run:
+2. Run:
 
 `docker exec -it fire_backend bash`
     
