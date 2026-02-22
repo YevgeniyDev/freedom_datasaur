@@ -1,246 +1,288 @@
-Freedom Datasaur — FIRE Ticket Routing Service (Hackathon)
-====================================================
+# FREEDOM_DATASAUR — FIRE Challenge (Ticket Enrichment + Routing + Assignment)
 
-Automatic overnight ticket processing pipeline:
+A lightweight end-to-end system that:
 
-CSV ingest → AI enrichment (LLM + fastText + heuristics + OCR for attachments) → deterministic routing + load balancing →
-stored in PostgreSQL → export to CSV (and ready for UI visualization).
+1. ingests incoming tickets,
+2. enriches them with AI (category, urgency, sentiment, language, summary, optional OCR),
+3. routes them to the correct office / manager using business rules + manager skills,
+4. assigns fairly using Round-Robin with load-balancing,
+5. exports a single `results.csv`,
+6. provides a tiny frontend to lookup a ticket by its GUID.
 
-----------------------------------------------------
-What it does
-----------------------------------------------------
+---
 
-Input (3 CSVs)
-- data/tickets.csv
-  - client GUID, segment (Mass/VIP/Priority), description, attachment filename (e.g. order_error.png), address fields
-- data/managers.csv
-  - name, position (Спец/Ведущий спец/Глав спец), skills (VIP/ENG/KZ), office, current load
-- data/business_units.csv
-  - office name + office address
+## Repository Structure
 
-AI enrichment (stored in ticket_ai)
-For each ticket we store:
-- type_category (7 types):
-  Жалоба / Смена данных / Консультация / Претензия /
-  Неработоспособность приложения / Мошеннические действия / Спам
-- sentiment: Позитивный / Нейтральный / Негативный
-- urgency: 1..10
-  - Business rule: VIP/Priority urgency is boosted to >= 8
-- language: RU / ENG / KZ
-  - Final language is decided by fastText + heuristics (may override LLM)
-  - If the text looks like a different language (e.g., Uzbek-like latin text), we route as RU per spec but set needs_review=true
-    and add a warning note in summary
-- summary: 1–2 sentences with what the manager should do (includes language warning if unknown-like)
-- recommended_actions: list of actions
-- confidence: JSON debug info (LLM output, fastText top-k, OCR preview, rule overrides)
+- `backend/`
+  - `app/`
+    - `ai/` — language detection + LLM enrichment
+      - `models/lid.176.bin` — fastText language id model
+      - `enrich.py`, `lang_detect.py`, `llm_client.py`, `prompts.py`, `schema.py`
+    - `routing/` — rules + allocator + trace
+      - `rules.py`, `allocator.py`, `trace.py`
+    - `db/` — SQLAlchemy session/models
+    - `main.py` — FastAPI entrypoint
+  - `alembic/` — DB migrations
+  - `Dockerfile`
+- `data/`
+  - `tickets.csv`
+  - `business_units.csv`
+  - `managers.csv`
+  - (optional) `results.csv` output
+- `frontend/`
+  - `index.html`, `app.js`, `main.css`
+- `scripts/`
+  - `seed_db.py` — load CSVs into DB
+  - `run_batch.py` — run enrichment + routing + assignment (writes to DB)
 
-Attachment OCR (real image understanding)
-- Tickets may include an attachment filename (e.g., order_error.png).
-- The service resolves attachments relative to /app/data (mounted from ./data).
-- pytesseract OCR extracts text from images and injects it into the LLM prompt and rule engine.
-- OCR text is stored (preview) in ticket_ai.confidence["attachment_ocr"] for proof/debugging.
+---
 
-Rule guardrails (prevents common LLM mistakes)
-Before trusting the LLM category, we apply deterministic overrides:
-- Spam patterns (links, crypto/casino/etc) → type_category = "Спам"
-- Verification/registration/doc-language issues (incl. Dia) → "Неработоспособность приложения"
-- Payment failures ("не проходит оплата", "ошибка платежа") → "Неработоспособность приложения"
-- Strong personal-data change intent (phone/email/IIN/passport/etc) → "Смена данных"
-- Commission/fees questions ("комиссия/удержание/списание/обслуживание") → "Консультация"
-These overrides are stored in confidence["rule_override"].
+## Prerequisites
 
-Deterministic routing (stored in assignments)
-Hard business rules:
-1) Office selection
-   - Kazakhstan + city → office match (exact/contains + fuzzy)
-   - Unknown / abroad / missing city → stable 50/50 Astana/Almaty (hash by GUID)
-   - (Geocoding + nearest-office is a planned improvement)
-2) Eligibility filters (hard constraints)
-   - VIP/Priority → only managers with VIP skill
-   - "Смена данных" → only "Глав спец" (robust normalization by substring "глав")
-   - Language ENG/KZ → manager must have corresponding skill
-3) Load balancing
-   - Pick 2 eligible managers with lowest effective load
-   - Alternate via Round Robin with Postgres row-lock table rr_state
-4) Explainability
-   - assignments.decision_trace records office reason, constraints, eligible set, loads, RR pick, notes
+- Docker + Docker Compose
+- (For AI enrichment) an LLM endpoint:
+  - default: Ollama on host
+- fastText language model file:
+  - must exist at: `backend/app/ai/models/lid.176.bin`
 
-Spam handling
-- Tickets classified as "Спам" are enriched and stored in ticket_ai, but are NOT assigned to a manager and do not contain summary.
+---
 
-----------------------------------------------------
-Repo structure (main parts)
-----------------------------------------------------
+## Environment Variables
 
-```bash
-backend/app/main.py                FastAPI entrypoint (health endpoint)
-backend/app/db/models.py           SQLAlchemy models (tickets, ticket_ai, managers, business_units, assignments, rr_state)
-backend/alembic/                   Migrations
-backend/app/ai/                    AI enrichment
-  - llm_client.py                  Ollama client (JSON output)
-  - prompts.py                     Strict system prompt + user prompt (includes OCR text)
-  - enrich.py                      Rule overrides + OCR + fastText/heuristics + writes ticket_ai
-  - lang_detect.py                 fastText language detection helper
-scripts/seed_db.py                 CSV → DB seeding (cleans tables + inserts)
-scripts/run_batch.py               Batch: enrich + choose office + filter + allocate RR + write assignments
-data/                              CSVs and attachments (e.g. order_error.png)
-backend/Dockerfile                 Backend container (installs tesseract + build tools for fasttext)
-```
+See `.env.example`. Common ones:
 
-----------------------------------------------------
-Requirements / Tools
-----------------------------------------------------
-- Docker Desktop (Windows)
-- Ollama running locally on host (for LLM)
-- fastText model lid.176.bin (download once; not committed)
-- pytesseract + tesseract-ocr inside backend container (installed via Dockerfile)
+- `DATABASE_URL` (used inside backend container)
+- `OLLAMA_BASE_URL` or similar (depending on `llm_client.py`)
+- `FASTTEXT_LID_PATH` (optional override)
+  - default expects: `/app/backend/app/ai/models/lid.176.bin`
 
-----------------------------------------------------
-Setup (Dockerized backend + Postgres)
-----------------------------------------------------
+---
 
-1) Start services
+## Quick Start (One Command End-to-End + Export CSV)
+
 From repo root:
 
-  `docker compose up --build`
+1. Start services:
 
-Expected logs:
+docker compose up --build -d
 
-  `fire_backend | Uvicorn running on http://0.0.0.0:8000`
+2. Run migrations, seed DB, process tickets, export results:
 
-Health check (browser):
-
-  `http://localhost:8000/health`
-
-2) .env (optional, if you run scripts locally)
-If you run inside container, compose env is enough. For local runs, create .env:
-  ```bash
-  DATABASE_URL=postgresql+psycopg2://fire:fire@127.0.0.1:55432/fire
-  OLLAMA_BASE_URL=http://localhost:11434
-  OLLAMA_MODEL=qwen2.5:3b-instruct
-  FASTTEXT_LID_PATH=backend/app/ai/models/lid.176.bin
-  ```
-
-3) fastText language model (lid.176.bin)
-Download once (PowerShell, repo root):
-  `mkdir backend\app\ai\models -Force`
-  `Invoke-WebRequest -Uri "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin" -OutFile "backend\app\ai\models\lid.176.bin"`
-
-Do NOT commit:
-  `backend/app/ai/models/*.bin`
-
-----------------------------------------------------
-Run migrations + seed + batch (inside container)
-----------------------------------------------------
-
-Open a shell:
-  `docker exec -it fire_backend bash`
-
-Then:
-  `cd /app/backend`
-  `alembic upgrade head`
-
-Seed (loads CSVs, clears derived tables):
-  `python /app/scripts/seed_db.py`
-
-Run batch (enrich + route + assign; spam is not assigned):
-  `python /app/scripts/run_batch.py`
-
-Expected counts (example):
-  ```bash
-  tickets 31
-  ticket_ai 31
-  assignments 28
-  spam not assigned 3
-  ```
-
-----------------------------------------------------
-Export results to CSV (Excel-friendly)
-----------------------------------------------------
-
-Inside container (writes UTF-8 with BOM via utf-8-sig):
-  ```bash
-  python - << 'PY'
+docker exec -it fire_backend bash -lc "
+cd /app/backend &&
+alembic upgrade head &&
+python /app/scripts/seed_db.py &&
+python /app/scripts/run_batch.py &&
+python - << 'PY'
 import os, pandas as pd
 from sqlalchemy import create_engine, text
-e = create_engine(os.environ["DATABASE_URL"])
-q = """
+e = create_engine(os.environ['DATABASE_URL'])
+q = '''
 select
-  t.client_guid,
-  t.segment,
-  t.country, t.region, t.city, t.street, t.house,
-  t.description,
-  t.attachment_path,
-  ai.type_category,
-  ai.sentiment,
-  ai.urgency,
-  ai.language as final_language,
-  ai.needs_review,
-  ai.summary,
-  left(coalesce(ai.confidence->>'attachment_ocr',''), 200) as ocr_preview,
-  bu.office_name as assigned_office,
-  m.full_name as assigned_manager,
-  m.position as manager_position,
-  m.skills as manager_skills,
-  a.assigned_at
+t.client_guid,
+t.segment,
+t.country, t.region, t.city, t.street, t.house,
+t.description,
+t.attachment_path,
+ai.type_category,
+ai.sentiment,
+ai.urgency,
+ai.language as final_language,
+ai.needs_review,
+ai.summary,
+bu.office_name as assigned_office,
+m.full_name as assigned_manager,
+m.position as manager_position,
+m.skills as manager_skills,
+a.assigned_at
 from tickets t
 left join ticket_ai ai on ai.ticket_id = t.id
 left join assignments a on a.ticket_id = t.id
 left join managers m on m.id = a.manager_id
 left join business_units bu on bu.id = a.business_unit_id
 order by a.assigned_at nulls last, t.client_guid
-"""
+'''
 df = pd.read_sql_query(text(q), e)
 df.to_csv('/app/data/results.csv', index=False, encoding='utf-8-sig')
 print('Wrote /app/data/results.csv rows:', len(df))
 PY
-```
+"
 
-Copy to Windows (run in PowerShell on host, NOT inside container):
+3. Copy CSV to host:
 
-  `docker cp fire_backend:/app/data/results.csv .\results.csv`
+Windows PowerShell:
+docker cp fire_backend:/app/data/results.csv .\results.csv
 
-Transform to Excel format (to avoid artifacts):
+macOS/Linux:
+docker cp fire_backend:/app/data/results.csv ./results.csv
 
-  ` python -c "p=open('results.csv','rb').read(); open('results_excel.csv','wb').write(b'\xef\xbb\xbf'+p)"`
+---
 
-----------------------------------------------------
-Quick checks (SQL)
-----------------------------------------------------
+## Debug / Verification
 
-Hard-rule violations should be 0:
-- VIP skill:
-  ```bash
-  select count(*) from assignments a
-  join tickets t on t.id=a.ticket_id
-  join managers m on m.id=a.manager_id
-  where t.segment in ('VIP','Priority') and not ('VIP'=any(m.skills));
-  ```
-- Data-change → only chief:
-```bash
-  select count(*) from assignments a
-  join ticket_ai ai on ai.ticket_id=a.ticket_id
-  join managers m on m.id=a.manager_id
-  where ai.type_category='Смена данных' and lower(m.position) not like '%глав%';
-```
-- Language skills:
-  ```bash
-  select count(*) from assignments a
-  join ticket_ai ai on ai.ticket_id=a.ticket_id
-  join managers m on m.id=a.manager_id
-  where ai.language in ('ENG','KZ') and not (ai.language=any(m.skills));
-  ```
-OCR proof:
-- show rows where OCR was stored:
-```bash
-  select t.attachment_path, left(ai.confidence->>'attachment_ocr', 200)
-  from tickets t join ticket_ai ai on ai.ticket_id=t.id
-  where ai.confidence ? 'attachment_ocr';
-```
+Check backend docs:
+http://localhost:8000/docs
 
-----------------------------------------------------
-Notes / Next improvements
-----------------------------------------------------
-- Replace city-match office selection with geocoding + nearest-office distance (store lat/lon for offices and tickets).
-- Add a simple UI (React/Vite): list tickets, show summary/actions, show decision_trace, filters by office/category/lang.
-- Star Task: NL query → safe intent mapping → predefined SQL → charts (no free-form SQL for safety).
+Check logs:
+docker logs fire_backend --tail 100
+
+---
+
+## Ticket Lookup API (GUID → Assignment + Enrichment)
+
+To support the frontend lookup, the backend provides:
+
+GET /api/tickets/{client_guid}
+
+Example:
+http://localhost:8000/api/tickets/fe44694a-10ed-f011-8406-0022481ba5f0
+
+If you see:
+
+- 404 Not Found (endpoint): route is not registered (fix `backend/app/main.py`)
+- 404 with JSON detail: GUID not in DB (pipeline not run or GUID wrong)
+
+### Minimal Implementation (backend/app/main.py)
+
+Add this to the SAME FastAPI `app` that uvicorn runs (`uvicorn app.main:app`):
+
+from fastapi import HTTPException
+from sqlalchemy import text
+from app.db.session import SessionLocal
+
+@app.get("/api/tickets/{client_guid}")
+def api_ticket_lookup(client_guid: str):
+db = SessionLocal()
+try:
+q = text("""
+select
+t.client_guid,
+t.segment,
+t.country, t.region, t.city, t.street, t.house,
+t.description,
+t.attachment_path,
+ai.type_category,
+ai.sentiment,
+ai.urgency,
+ai.language as final_language,
+ai.needs_review,
+ai.summary,
+bu.office_name as assigned_office,
+m.full_name as assigned_manager,
+m.position as manager_position,
+m.skills as manager_skills,
+a.assigned_at
+from tickets t
+left join ticket_ai ai on ai.ticket_id = t.id
+left join assignments a on a.ticket_id = t.id
+left join managers m on m.id = a.manager_id
+left join business_units bu on bu.id = a.business_unit_id
+where t.client_guid = :guid
+order by a.assigned_at desc nulls last
+limit 1
+""")
+row = db.execute(q, {"guid": client_guid}).mappings().first()
+if not row:
+raise HTTPException(status_code=404, detail="Ticket GUID not found in DB")
+return dict(row)
+finally:
+db.close()
+
+Rebuild after changes:
+docker compose up --build -d
+
+---
+
+## Frontend (10–15 min UI): Search Ticket by GUID
+
+This is a single HTML page served by a static server.
+
+### Run
+
+1. Ensure backend is running on:
+   http://localhost:8000
+
+2. Start frontend static server:
+
+From repo root:
+cd frontend
+python -m http.server 5173
+
+Open:
+http://localhost:5173
+
+Paste a GUID, press Find → you get assignment + AI enrichment + raw JSON.
+
+### Files
+
+- `frontend/index.html` — UI layout
+- `frontend/app.js` — fetches `GET {BackendURL}/api/tickets/{guid}`
+- `frontend/main.css` — minimal styling
+
+If frontend says it cannot reach backend:
+
+- confirm `http://localhost:8000/docs` opens
+- confirm the lookup endpoint exists in docs: `GET /api/tickets/{client_guid}`
+- if your backend is containerized but frontend also in docker, use service name instead of localhost
+
+---
+
+## How Assignment Works (High Level)
+
+1. AI enrichment:
+
+- Detect language (fastText)
+- LLM-based classification/summary/urgency/sentiment (via `llm_client.py` + prompts)
+
+2. Routing constraints:
+
+- VIP tickets: only eligible VIP managers
+- “Смена данных” / data-change: only chief manager
+- Language filtering: must match manager language skills
+
+3. Final assignment:
+
+- pick among eligible managers
+- prefer lower load
+- apply Round-Robin state for fairness
+- store results in DB (`assignments` table)
+
+---
+
+## Common Issues
+
+### 1) /api/tickets/{guid} returns 404 Not Found (endpoint)
+
+You did not register the route in the FastAPI `app` used by uvicorn.
+Fix: add endpoint to `backend/app/main.py` where `app = FastAPI()` is defined, rebuild.
+
+### 2) Ticket GUID not found
+
+Run pipeline:
+python /app/scripts/seed_db.py
+python /app/scripts/run_batch.py
+
+### 3) LLM not reachable
+
+If you use Ollama on host, ensure it is running and the backend container can reach it.
+(If needed, expose host via `host.docker.internal` on Windows/Mac.)
+
+---
+
+## Outputs
+
+- DB tables: tickets + ticket_ai + assignments + managers + business_units
+- Final exported CSV:
+  - `/app/data/results.csv` inside container
+  - copy to host with `docker cp`
+
+---
+
+## Hackathon Deliverable Notes
+
+- System is fully reproducible via Docker Compose
+- Simple UI provided for demo:
+  - enter GUID → instantly show assigned manager + office + AI enrichment
+- Final results CSV can be generated with the one-command pipeline above
+
+---
