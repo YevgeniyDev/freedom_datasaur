@@ -112,7 +112,7 @@ PY
 "
 ```
 
-4. To view results in CSV format - copy CSV to host:
+4. To view results in CSV format - open new Terminal window, go to the root repo and copy CSV to host:
 
 Windows PowerShell:
 
@@ -126,7 +126,7 @@ macOS/Linux:
 
 `python -c "p=open('results.csv','rb').read(); open('results_excel.csv','wb').write(b'\xef\xbb\xbf'+p)"`
 
-Now you can check it in the ROOT Repo folder - 'results_excel.csv'
+Now you can check it in the ROOT Repo - 'results_excel.csv'
 
 ---
 
