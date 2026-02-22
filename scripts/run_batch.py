@@ -26,7 +26,7 @@ from app.routing.trace import build_decision_trace  # noqa: E402
 
 
 # -----------------------
-# Office selection helpers
+# Office selection helpers (improved: region-first for villages)
 # -----------------------
 KZ_ALIASES = {"казахстан", "kazakhstan", "kz", "kazaqstan"}
 
@@ -35,6 +35,37 @@ CITY_SYNONYMS = {
     "kosshy / astana": "астана",
     "косшы / астана": "астана",
     "косшы": "астана",
+}
+
+# Region -> office-city mapping for Kazakhstan.
+# Key: substring to detect in "Область"
+# Value: needles to find office (by office_name)
+REGION_TO_OFFICE = {
+    # major regions
+    "алмат": ("алмат", "almaty"),
+    "акмол": ("кокшет", "kokshetau", "кокшетау"),
+    "акто": ("актоб", "aktobe", "актобе"),
+    "атыра": ("атыра", "atyrau", "атырау"),
+    "восточно": ("усть", "камен", "oskemen", "уст", "усть-камен", "усть-каменогорск"),
+    "западно": ("урал", "uralsk", "уральск"),
+    "жамбыл": ("тараз", "taraz"),
+    "караганд": ("караганд", "karaganda"),
+    "костан": ("костан", "kostanay"),
+    "кызылорд": ("кызылорд", "kyzylorda"),
+    "мангист": ("актау", "aktau"),
+    "павлодар": ("павлодар", "pavlodar"),
+    "северо": ("петропав", "petropav", "петропавл"),
+    "туркест": ("шымкент", "shymkent"),
+    "шымкент": ("шымкент", "shymkent"),
+    "абай": ("усть", "камен", "усть-каменогорск"),  # fallback if needed
+    "улытау": ("караганд", "karaganda"),             # fallback if needed
+    "жетысу": ("алмат", "almaty"),                   # fallback if needed
+}
+
+SPECIAL_CITIES = {
+    "астана": ("астан", "astana"),
+    "алматы": ("алмат", "almaty"),
+    "шымкент": ("шымкент", "shymkent"),
 }
 
 
@@ -78,12 +109,39 @@ def _choose_astana_almaty(ticket: Ticket, offices: List[BusinessUnit], reason: s
     return chosen, f"{reason} -> 50/50 first-two offices"
 
 
+def _choose_by_region(ticket: Ticket, offices: List[BusinessUnit]) -> Optional[Tuple[BusinessUnit, str]]:
+    """
+    Region-first routing:
+    If ticket.region contains a known region substring -> map to the regional office city.
+    This solves village ambiguity (many villages share names).
+    """
+    reg = _norm(ticket.region)
+    if not reg:
+        return None
+
+    # If region field itself is "г. Алматы"/"г. Астана" etc.
+    for city_key, needles in SPECIAL_CITIES.items():
+        if city_key in reg:
+            o = _find_office(offices, *needles)
+            if o:
+                return o, f"Region indicates special city '{ticket.region}' -> '{o.office_name}'"
+
+    for reg_key, needles in REGION_TO_OFFICE.items():
+        if reg_key in reg:
+            o = _find_office(offices, *needles)
+            if o:
+                return o, f"Region match '{ticket.region}' -> '{o.office_name}'"
+
+    return None
+
+
 def choose_business_unit(ticket: Ticket, offices: List[BusinessUnit]) -> Tuple[BusinessUnit, str]:
     """
-    Real rule (phase 1, no geocode yet):
+    Improved rule:
     - country missing / not Kazakhstan -> 50/50 Astana/Almaty
+    - if Kazakhstan and region is present -> choose regional office (best for villages)
     - else try city->office match (exact/contains), then fuzzy on office_name
-    - if still not an office city -> treat like unknown address -> 50/50 Astana/Almaty
+    - if still not an office city -> 50/50 Astana/Almaty
     """
     if not offices:
         raise RuntimeError("No offices loaded")
@@ -91,31 +149,39 @@ def choose_business_unit(ticket: Ticket, offices: List[BusinessUnit]) -> Tuple[B
     if not _is_kazakhstan(ticket.country):
         return _choose_astana_almaty(ticket, offices, "Unknown/abroad country")
 
+    # 1) Region-first (solves "no-name villages")
+    by_region = _choose_by_region(ticket, offices)
+    if by_region is not None:
+        return by_region
+
+    # 2) City-based fallback (old behavior)
     raw_city = (ticket.city or "").strip()
     city = _norm(raw_city)
     if not city:
-        return _choose_astana_almaty(ticket, offices, "KZ but city missing (unknown address)")
+        return _choose_astana_almaty(ticket, offices, "KZ but city missing and region missing (unknown address)")
 
     city = CITY_SYNONYMS.get(city, city)
     if "астана" in city:
         city = "астана"
     if "алматы" in city:
         city = "алматы"
+    if "шымкент" in city:
+        city = "шымкент"
 
     # exact/contains on office_name
     for o in offices:
         on = _norm(o.office_name)
         if city == on or city in on:
-            return o, f"KZ city exact/contains match: '{raw_city}' -> '{o.office_name}'"
+            return o, f"City exact/contains match: '{raw_city}' -> '{o.office_name}'"
 
     # fuzzy match on office_name (normalized)
     office_norm_map = {_norm(o.office_name): o for o in offices}
     match = process.extractOne(city, list(office_norm_map.keys()), scorer=fuzz.WRatio)
     if match and match[1] >= 90:
         best = office_norm_map[match[0]]
-        return best, f"KZ city fuzzy match: '{raw_city}' -> '{best.office_name}' (score={match[1]})"
+        return best, f"City fuzzy match: '{raw_city}' -> '{best.office_name}' (score={match[1]})"
 
-    return _choose_astana_almaty(ticket, offices, f"KZ city '{raw_city}' not an office city (no geocode yet)")
+    return _choose_astana_almaty(ticket, offices, f"KZ city '{raw_city}' not an office city and region missing")
 
 
 # -----------------------
@@ -208,17 +274,16 @@ def main() -> None:
             ai = enrich_ticket(session, ollama, t)
             language = (ai.language or "RU").upper()
             type_category = ai.type_category or "Консультация"
-            
+
             # Do not assign spam tickets
             if (type_category or "").strip() == "Спам":
-                # Keep in DB as enriched spam; no assignment row
                 session.commit()
                 print(f"[SPAM] ticket={t.id} stored, not assigned")
                 continue
 
             needs = compute_needs(segment=t.segment, type_category=type_category, language=language)
 
-            # 2) Choose office (geo rule phase 1)
+            # 2) Choose office (region-first)
             office, office_reason = choose_business_unit(t, offices)
 
             # 3) Filter eligible in chosen office
@@ -235,9 +300,7 @@ def main() -> None:
                     eligible = fb_eligible
                     office_reason = f"{office_reason} | {fb_reason}"
                 else:
-                    # Escalation (spec doesn't define, but we must not silently drop)
                     escalated_count += 1
-                    # Mark AI row for review and keep going
                     ai.needs_review = True
                     session.commit()
                     print(f"[ESCALATE] ticket={t.id} segment={t.segment} type={type_category} lang={language} reason={fb_reason}")

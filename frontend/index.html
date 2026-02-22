@@ -3,39 +3,190 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FIRE Ticket Lookup</title>
+    <title>FIRE Dashboard</title>
     <link rel="stylesheet" href="./main.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   </head>
   <body>
     <div class="wrap">
       <header class="top">
-        <h1>Ticket Lookup</h1>
-        <p>Paste a <b>client GUID</b> to see enrichment + assignment.</p>
+        <div>
+          <h1>FIRE Ticket Dashboard</h1>
+          <p>Filter tickets, inspect details, and view quick stats.</p>
+        </div>
+        <div class="topRight">
+          <label class="mini">
+            Backend URL
+            <input id="baseUrl" value="http://localhost:8000" />
+          </label>
+          <button id="refreshBtn" type="button">Refresh</button>
+        </div>
       </header>
 
+      <!-- KPIs -->
       <section class="card">
-        <form id="form">
-          <label for="guid">Client GUID</label>
-          <div class="row">
-            <input
-              id="guid"
-              placeholder="e.g., 3fa85f64-5717-4562-b3fc-2c963f66afa6"
-            />
-            <button id="btn" type="submit">Find</button>
+        <div class="kpiRow">
+          <div class="kpiBox">
+            <div class="k">Total</div>
+            <div class="v" id="kpi_total">—</div>
           </div>
-          <div class="hint">
-            Backend URL:
-            <input id="baseUrl" value="http://localhost:8000" />
+          <div class="kpiBox">
+            <div class="k">Assigned</div>
+            <div class="v" id="kpi_assigned">—</div>
           </div>
-        </form>
-
+          <div class="kpiBox">
+            <div class="k">Unassigned</div>
+            <div class="v" id="kpi_unassigned">—</div>
+          </div>
+          <div class="kpiBox">
+            <div class="k">Needs review</div>
+            <div class="v" id="kpi_review">—</div>
+          </div>
+          <div class="kpiBox">
+            <div class="k">Spam</div>
+            <div class="v" id="kpi_spam">—</div>
+          </div>
+          <div class="kpiBox">
+            <div class="k">Avg urgency</div>
+            <div class="v" id="kpi_avgurg">—</div>
+          </div>
+        </div>
         <div id="status" class="status"></div>
       </section>
 
-      <section id="result" class="card hidden">
+      <!-- Filters -->
+      <section class="card">
+        <div class="filters">
+          <div class="f">
+            <div class="lbl">Office</div>
+            <select id="f_office"></select>
+          </div>
+          <div class="f">
+            <div class="lbl">Assigned</div>
+            <select id="f_assigned">
+              <option value="">All</option>
+              <option value="assigned">Assigned</option>
+              <option value="unassigned">Unassigned</option>
+            </select>
+          </div>
+          <div class="f">
+            <div class="lbl">Segment</div>
+            <select id="f_segment">
+              <option value="">All</option>
+              <option value="Mass">Mass</option>
+              <option value="VIP">VIP</option>
+              <option value="Priority">Priority</option>
+            </select>
+          </div>
+          <div class="f">
+            <div class="lbl">Category</div>
+            <input id="f_category" placeholder="e.g., Консультация" />
+          </div>
+          <div class="f">
+            <div class="lbl">Language</div>
+            <select id="f_lang">
+              <option value="">All</option>
+              <option value="RU">RU</option>
+              <option value="ENG">ENG</option>
+              <option value="KZ">KZ</option>
+            </select>
+          </div>
+          <div class="f">
+            <div class="lbl">Needs review</div>
+            <select id="f_review">
+              <option value="">All</option>
+              <option value="true">Yes</option>
+              <option value="false">No</option>
+            </select>
+          </div>
+          <div class="f">
+            <div class="lbl">Urgency min</div>
+            <input id="f_umin" type="number" min="1" max="10" placeholder="1" />
+          </div>
+          <div class="f">
+            <div class="lbl">Urgency max</div>
+            <input
+              id="f_umax"
+              type="number"
+              min="1"
+              max="10"
+              placeholder="10"
+            />
+          </div>
+          <div class="f grow">
+            <div class="lbl">Search</div>
+            <input id="f_q" placeholder="GUID / summary / description" />
+          </div>
+          <div class="f">
+            <div class="lbl"></div>
+            <button id="applyBtn" type="button">Apply</button>
+          </div>
+          <div class="f">
+            <div class="lbl"></div>
+            <button id="clearBtn" type="button" class="ghost">Clear</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Charts -->
+      <section class="card">
+        <div class="charts">
+          <div class="chartBox">
+            <div class="chartTitle">Tickets by category</div>
+            <canvas id="ch_category"></canvas>
+          </div>
+          <div class="chartBox">
+            <div class="chartTitle">Tickets by office</div>
+            <canvas id="ch_office"></canvas>
+          </div>
+          <div class="chartBox">
+            <div class="chartTitle">Urgency histogram</div>
+            <canvas id="ch_urgency"></canvas>
+          </div>
+          <div class="chartBox">
+            <div class="chartTitle">Language distribution</div>
+            <canvas id="ch_lang"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <!-- Table + Details -->
+      <section class="card">
+        <div class="tableTop">
+          <div class="tableTitle">Tickets</div>
+          <div class="pager">
+            <button id="prevBtn" class="ghost">Prev</button>
+            <div id="pageInfo" class="pageInfo">—</div>
+            <button id="nextBtn" class="ghost">Next</button>
+          </div>
+        </div>
+
+        <div class="tableWrap">
+          <table class="t">
+            <thead>
+              <tr>
+                <th>GUID</th>
+                <th>Office</th>
+                <th>Manager</th>
+                <th>Segment</th>
+                <th>Category</th>
+                <th>Urg</th>
+                <th>Lang</th>
+                <th>Review</th>
+                <th>Summary</th>
+              </tr>
+            </thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="detail" class="card hidden">
         <div class="resultHeader">
           <h2 id="title"></h2>
-          <button id="copyBtn" type="button">Copy JSON</button>
+          <div class="detailBtns">
+            <button id="copyBtn" type="button">Copy JSON</button>
+          </div>
         </div>
 
         <div class="grid">

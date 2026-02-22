@@ -41,7 +41,6 @@ CHANGE_DATA_PATTERNS = [
     r"\bисправ(ить|ление)\b.*\b(фио|фамил|имя|дата рождения|паспорт|удост|иин)\b",
 ]
 
-# Important: verification/registration issues are APP ISSUES, not "Смена данных"
 APP_FLOW_PATTERNS = [
     r"\bне могу\b.*\b(подтверд(ить|ить)|верифицирова(ть|ться)|подтвержден)\b",
     r"\b(верификац|подтвержден|подтвердить)\b.*\b(адрес|регистрац)\b",
@@ -68,6 +67,20 @@ COMMISSION_FEE_PATTERNS = [
     r"\bбездействующ(их|его)\s+счет",
 ]
 
+TAX_ACCOUNT_PATTERNS = [
+    r"\bналог(и|ов|а|ом)?\b",
+    r"\bдекларац(ия|ии|ию|ией)\b",
+    r"\bнерезидент(ы|а|ом)?\b",
+    r"\bрезидент(ы|а|ом)?\b",
+    r"\b(рк|казахстан)\b",
+    r"\b(иин|бин)\b",
+    r"\bброкер(а|у|ом)?\b",
+    r"\b(d[\-\s]?счет|d[\-\s]?сч[её]т)\b",
+    r"\bинвесткард\b",
+    r"\b(репо|repo)\b",
+    r"\bдоход(а|ы|ом)?\b",
+]
+
 SPAM_PATTERNS = [
     r"http[s]?://",
     r"www\.",
@@ -77,26 +90,34 @@ SPAM_PATTERNS = [
     r"\b(розыгрыш|выиграл|приз|бонус)\b",
 ]
 
+# NEW: low-information messages that must NOT be guessed
+LOW_INFO_PATTERNS = [
+    r"^\s*(help|помогите|помоги|срочно)\s*[!.]*\s*$",
+    r"^\s*(здравств(уйте|уй)|добрый\s+день|добрый\s+вечер)\s*[!.]*\s*$",
+    r"^\s*(не\s*работает|ошибка|error|bug)\s*[!.]*\s*$",
+]
+
 
 def rule_override_category(text: str) -> Tuple[Optional[str], Dict[str, Any]]:
     """
-    Deterministic overrides to prevent damaging misclassification:
-    - Spam -> Спам
-    - App flow (verification/registration/doc language) -> Неработоспособность приложения
-    - Payment fail -> Неработоспособность приложения
-    - Strong personal data change -> Смена данных
-    - Fees/commission questions -> Консультация
+    Deterministic overrides to prevent damaging misclassification.
     """
     t = (text or "").strip().lower()
     signals: Dict[str, Any] = {"hit": []}
     if not t:
         return None, signals
 
-    # 1) Spam first
+    # 0) True spam first
     for p in SPAM_PATTERNS:
         if re.search(p, t, re.IGNORECASE):
             signals["hit"].append(f"spam:{p}")
             return "Спам", signals
+
+    # 1) Prevent LLM false "Спам" on real finance/tax support requests
+    tax_hits = sum(1 for p in TAX_ACCOUNT_PATTERNS if re.search(p, t, re.IGNORECASE))
+    if tax_hits >= 2:
+        signals["hit"].append({"tax_hits": tax_hits})
+        return "Консультация", signals
 
     # 2) App flow failures must win over "Смена данных"
     for p in APP_FLOW_PATTERNS:
@@ -116,13 +137,29 @@ def rule_override_category(text: str) -> Tuple[Optional[str], Dict[str, Any]]:
             signals["hit"].append(f"change_data:{p}")
             return "Смена данных", signals
 
-    # 5) Fee/commission questions are consultation (not change-data)
+    # 5) Fee/commission questions are consultation
     fee_hits = sum(1 for p in COMMISSION_FEE_PATTERNS if re.search(p, t, re.IGNORECASE))
     if fee_hits >= 2:
         signals["hit"].append({"fee_hits": fee_hits})
         return "Консультация", signals
 
     return None, signals
+
+
+def _is_low_info(description: str | None) -> bool:
+    s = (description or "").strip().lower()
+    if not s:
+        return True
+    # very short: <= 10 chars or <= 2 words is usually not enough
+    if len(s) <= 10:
+        return True
+    if len(s.split()) <= 2:
+        # treat 1-2 words as low info unless it contains a strong keyword
+        return True
+    for p in LOW_INFO_PATTERNS:
+        if re.search(p, s, re.IGNORECASE):
+            return True
+    return False
 
 
 def _clamp_urgency(u: Any, default: int = 5) -> int:
@@ -133,15 +170,7 @@ def _clamp_urgency(u: Any, default: int = 5) -> int:
     return max(1, min(10, v))
 
 
-# -----------------------
-# OCR helper (Step 2)
-# -----------------------
 def resolve_attachment_path(rel_or_abs: str | None) -> Optional[Path]:
-    """
-    tickets.csv stores relative paths like 'order_error.png'.
-    We resolve them against repo_root/data/.
-    Also supports absolute paths.
-    """
     if not rel_or_abs:
         return None
     s = str(rel_or_abs).strip()
@@ -152,13 +181,11 @@ def resolve_attachment_path(rel_or_abs: str | None) -> Optional[Path]:
     if p.is_absolute() and p.exists():
         return p
 
-    # repo root: backend/app/ai/enrich.py -> parents[3] == repo root
     repo_root = Path(__file__).resolve().parents[3]
     candidate = repo_root / "data" / p.name
     if candidate.exists():
         return candidate
 
-    # also allow direct relative from repo root
     candidate2 = repo_root / p
     if candidate2.exists():
         return candidate2
@@ -176,7 +203,6 @@ def ocr_attachment_text(attachment: str | None) -> Optional[str]:
 
     try:
         img = Image.open(p)
-        # rus+eng is enough for your screenshots; can add kaz later if installed
         text = pytesseract.image_to_string(img, lang="rus+eng")
         text = " ".join((text or "").split())
         return text if text else None
@@ -185,12 +211,10 @@ def ocr_attachment_text(attachment: str | None) -> Optional[str]:
 
 
 def enrich_ticket(session: Session, ollama: OllamaClient, ticket: Ticket) -> TicketAI:
-    # If already enriched, return it
     existing = session.query(TicketAI).filter(TicketAI.ticket_id == ticket.id).one_or_none()
     if existing:
         return existing
 
-    # OCR extracted text (used in prompt; safe even if None)
     attachment_ocr = ocr_attachment_text(ticket.attachment_path)
 
     raw = ollama.chat_json(
@@ -199,32 +223,49 @@ def enrich_ticket(session: Session, ollama: OllamaClient, ticket: Ticket) -> Tic
     )
     out = EnrichmentOut(**raw)
 
-    # -----------------------
-    # Category rule overrides (text-only, but OCR helps too because it gets added to description below)
-    # -----------------------
     # Combine description + OCR for robust rules
     combined_text = (ticket.description or "")
     if attachment_ocr:
         combined_text = combined_text + "\n\n[OCR]\n" + attachment_ocr
 
+    # --- Deterministic low-info override (prevents hallucinated summaries like "tariffs") ---
+    if _is_low_info(ticket.description) and not attachment_ocr:
+        out.type_category = "Консультация"
+        out.sentiment = out.sentiment or "Нейтральный"
+        out.urgency = _clamp_urgency(out.urgency, default=5)
+        out.language = (out.language or "RU").upper()
+        out.summary = "Недостаточно информации. Нужно уточнить: что именно произошло/какая ошибка/какой сервис?"
+        out.recommended_actions = [
+            "Запросить уточняющие детали у клиента (что именно нужно/какая ошибка/когда началось).",
+            "Попросить скриншот/код ошибки/контактные данные при необходимости.",
+        ]
+        out.needs_review = True
+        out.confidence = out.confidence or {}
+        out.confidence["rule_override_low_info"] = True
+
+    # Category rule overrides
     override_cat, rule_signals = rule_override_category(combined_text)
     if override_cat:
         out.type_category = override_cat
         out.confidence = out.confidence or {}
         out.confidence["rule_override"] = {"type_category": override_cat, **rule_signals}
 
-    # -----------------------
+    # Spam sanity check: VIP/Priority "Спам" must be reviewed
+    if (out.type_category or "").strip().lower() == "спам":
+        seg0 = (ticket.segment or "").strip().lower()
+        if seg0 in {"vip", "priority"}:
+            out.needs_review = True
+            out.confidence = out.confidence or {}
+            out.confidence["spam_sanity_check"] = "priority_segment_forced_review"
+
     # VIP/Priority urgency boost (business rule)
-    # -----------------------
     u = _clamp_urgency(out.urgency, default=5)
     seg = (ticket.segment or "").strip().lower()
     if seg in {"vip", "priority"}:
         u = max(u, 8)
     out.urgency = u
 
-    # -----------------------
     # fastText + heuristics language decision
-    # -----------------------
     repo_root = Path(__file__).resolve().parents[3]
     default_model = repo_root / "backend" / "app" / "ai" / "models" / "lid.176.bin"
     model_path = Path(os.getenv("FASTTEXT_LID_PATH", str(default_model)))
@@ -257,11 +298,9 @@ def enrich_ticket(session: Session, ollama: OllamaClient, ticket: Ticket) -> Tic
     p_ru = ft_best("ru")
     p_kk = ft_best("kk")
 
-    # Defaults per spec
     final_lang = "RU"
     unknown_lang_flag = False
 
-    # Strong fastText
     if p_kk >= 0.60:
         final_lang = "KZ"
     elif p_en >= 0.60:
@@ -282,7 +321,6 @@ def enrich_ticket(session: Session, ollama: OllamaClient, ticket: Ticket) -> Tic
         else:
             final_lang = "RU"
 
-    # If fastText top1 is a non-known language with decent prob, flag unknown (still route RU)
     top1 = ft_top[0] if ft_top else None
     top_code = (top1.get("code") if isinstance(top1, dict) else None)
     try:
@@ -294,7 +332,6 @@ def enrich_ticket(session: Session, ollama: OllamaClient, ticket: Ticket) -> Tic
     if top_code and (top_code not in KNOWN) and top_prob >= 0.55 and latin_ratio >= 0.45:
         unknown_lang_flag = True
 
-    # If language seems unknown, annotate summary for manager/UI
     if unknown_lang_flag:
         note = (
             "⚠️ Похоже, язык обращения не RU/ENG/KZ. "
@@ -303,7 +340,6 @@ def enrich_ticket(session: Session, ollama: OllamaClient, ticket: Ticket) -> Tic
         base = (out.summary or "").strip()
         out.summary = (base + " " + note).strip()
 
-    # Confidence enrichment
     conf = out.confidence or {}
     conf["fasttext_top5"] = ft_top
     conf["fasttext_top1"] = {"code": top_code, "prob": top_prob}
@@ -312,9 +348,8 @@ def enrich_ticket(session: Session, ollama: OllamaClient, ticket: Ticket) -> Tic
     conf["fasttext_summary"] = {"p_en": p_en, "p_ru": p_ru, "p_kk": p_kk}
     conf["unknown_language_flag"] = bool(unknown_lang_flag)
 
-    # Store OCR snippet in confidence (useful for debugging/UI)
     if attachment_ocr:
-        conf["attachment_ocr"] = attachment_ocr[:500]  # keep it small
+        conf["attachment_ocr"] = attachment_ocr[:500]
 
     ai = TicketAI(
         ticket_id=ticket.id,
