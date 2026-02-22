@@ -112,21 +112,7 @@ PY
 "
 ```
 
-4. To view results in CSV format - open new Terminal window, go to the root repo and copy CSV to host:
-
-Windows PowerShell:
-
-`docker cp fire_backend:/app/data/results.csv .\results.csv`
-
-macOS/Linux:
-
-`docker cp fire_backend:/app/data/results.csv ./results.csv`
-
-5. Transform it into viewable Excel formatting:
-
-`python -c "p=open('results.csv','rb').read(); open('results_excel.csv','wb').write(b'\xef\xbb\xbf'+p)"`
-
-Now you can check it in the ROOT Repo - 'results_excel.csv'
+Now you can check the CSV with results in the data folder - 'results.csv'
 
 ---
 
