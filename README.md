@@ -101,12 +101,15 @@ Setup (Dockerized backend + Postgres)
 
 1) Start services
 From repo root:
+
   `docker compose up --build`
 
 Expected logs:
+
   `fire_backend | Uvicorn running on http://0.0.0.0:8000`
 
 Health check (browser):
+
   `http://localhost:8000/health`
 
 2) .env (optional, if you run scripts locally)
